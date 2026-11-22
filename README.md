@@ -21,31 +21,30 @@
 ## Project Structure
 ```
 mediaremote/
-├── mediaremote/
-│   ├── SETUP.md                     # Comprehensive setup guide
-│   ├── ONE_SHOT_PROMPT.md           # Technical specification
-│   ├── agent/                       # Windows background agent
-│   │   ├── agent.py                 # GSMTC + Core Audio + Realtime client
-│   │   ├── requirements.txt         # Python dependencies
-│   │   ├── run_hidden.vbs           # Silent background launcher
-│   │   └── .env.example             # Agent environment template
-│   ├── scripts/                     # Verification and setup scripts
-│   │   ├── verify_agent.ps1         # Agent test suite
-│   │   ├── verify_web.mjs           # Web test suite & build check
-│   │   └── create_startup_shortcut.ps1 # Auto-start setup script
-│   └── web/                         # Next.js 14 Web Remote App
-│       ├── app/                     # React App Router & CSS
-│       ├── package.json             # NPM package manifest
-│       └── next.config.js           # Next.js configuration
+├── agent/                       # Windows background agent
+│   ├── agent.py                 # GSMTC + Core Audio + Realtime client
+│   ├── requirements.txt         # Python dependencies
+│   ├── run_hidden.vbs           # Silent background launcher
+│   └── .env.example             # Agent environment template
+├── scripts/                     # Verification and setup scripts
+│   ├── verify_agent.ps1         # Agent test suite
+│   ├── verify_web.mjs           # Web test suite & build check
+│   └── create_startup_shortcut.ps1 # Auto-start setup script
+├── web/                         # Next.js 14 Web Remote App
+│   ├── app/                     # React App Router & CSS
+│   ├── package.json             # NPM package manifest
+│   └── next.config.js           # Next.js configuration
+├── SETUP.md                     # Comprehensive setup guide
+├── ONE_SHOT_PROMPT.md           # Technical specification
 └── README.md
 ```
 
 ## Quick Start
-See the detailed walkthrough in [mediaremote/SETUP.md](mediaremote/SETUP.md).
+See the detailed walkthrough in [SETUP.md](SETUP.md).
 
 ### 1. Windows Agent Setup
 ```powershell
-cd mediaremote/agent
+cd agent
 python -m venv venv
 .\venv\Scripts\activate
 pip install -r requirements.txt
@@ -55,14 +54,14 @@ copy .env.example .env
 
 ### 2. Run Verifications
 ```powershell
-# In mediaremote/agent:
+# In agent folder:
 ..\scripts\verify_agent.ps1
 
-# In mediaremote/web:
+# In web folder:
 node ..\scripts\verify_web.mjs
 ```
 
 ### 3. Deploy to Vercel
-1. Import repository into Vercel with Root Directory set to `mediaremote/web`.
+1. Import repository into Vercel with **Root Directory** set to `web`.
 2. Add `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
 3. Open `https://<your-vercel-domain>.vercel.app/?key=<YOUR_SECRET_KEY>` on your phone.
