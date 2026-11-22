@@ -125,17 +125,23 @@ async def _get_manager():
     return await MediaManager.request_async()
 
 
+_last_thumb_key = None
+_cached_artwork = None
+
 async def _read_thumbnail(thumb_ref):
-    """thumb_ref is a RandomAccessStreamReference; returns (data_uri, None) or (None, None)."""
+    """thumb_ref is a RandomAccessStreamReference; returns data_uri or None."""
     if thumb_ref is None:
         return None
     try:
-        stream = await thumb_ref.open_read_async()
+        stream = await asyncio.wait_for(thumb_ref.open_read_async(), timeout=1.0)
         size = stream.size
         if size == 0 or size > MAX_ARTWORK_BYTES:
             return None
         buffer = Buffer(size)
-        await stream.read_async(buffer, size, InputStreamOptions.READ_AHEAD)
+        await asyncio.wait_for(
+            stream.read_async(buffer, size, InputStreamOptions.READ_AHEAD),
+            timeout=1.0,
+        )
         reader = DataReader.from_buffer(buffer)
         raw = bytearray(size)
         reader.read_bytes(raw)
@@ -144,6 +150,18 @@ async def _read_thumbnail(thumb_ref):
         return f"data:{content_type};base64,{b64}"
     except Exception:
         return None
+
+
+async def _get_artwork(props):
+    global _last_thumb_key, _cached_artwork
+    if not props:
+        return None
+    thumb_key = (getattr(props, "title", "") or "", getattr(props, "artist", "") or "")
+    if thumb_key == _last_thumb_key:
+        return _cached_artwork
+    _last_thumb_key = thumb_key
+    _cached_artwork = await _read_thumbnail(props.thumbnail)
+    return _cached_artwork
 
 
 async def read_media_state():
@@ -165,7 +183,7 @@ async def read_media_state():
         position_ms = int(timeline.position.total_seconds() * 1000) if timeline else 0
         duration_ms = int(timeline.end_time.total_seconds() * 1000) if timeline else 0
 
-        artwork = await _read_thumbnail(props.thumbnail if props else None)
+        artwork = await _get_artwork(props)
 
         return {
             "active": True,
@@ -178,7 +196,6 @@ async def read_media_state():
             "artwork": artwork,
         }
     except Exception:
-        traceback.print_exc()
         return {"active": False}
 
 
