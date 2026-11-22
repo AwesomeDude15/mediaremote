@@ -164,45 +164,108 @@ async def _get_artwork(props):
     return _cached_artwork
 
 
+async def _find_session(manager, session_id: str = None):
+    try:
+        sessions = manager.get_sessions()
+        if session_id:
+            for idx, s in enumerate(sessions):
+                sid = f"{s.source_app_user_model_id}_{idx}"
+                if sid == session_id or s.source_app_user_model_id == session_id:
+                    return s
+        return manager.get_current_session()
+    except Exception:
+        return None
+
+
 async def read_media_state():
-    """Returns a dict describing what's currently playing, or a minimal 'nothing' state."""
+    """Returns a dict describing all active and paused media sessions."""
     try:
         manager = await _get_manager()
-        session = manager.get_current_session()
-        if session is None:
-            return {"active": False}
+        sessions = manager.get_sessions()
+        current = manager.get_current_session()
+        current_id = current.source_app_user_model_id if current else None
 
-        props = await session.try_get_media_properties_async()
-        playback_info = session.get_playback_info()
-        timeline = session.get_timeline_properties()
+        session_list = []
+        for idx, s in enumerate(sessions):
+            try:
+                props = await s.try_get_media_properties_async()
+                title = (props.title if props else "") or ""
+                artist = (props.artist if props else "") or ""
+                app_id = s.source_app_user_model_id or "Media"
 
-        # PlaybackStatus: 0 Closed, 1 Opened, 2 Changing, 3 Stopped, 4 Playing, 5 Paused
-        status = int(playback_info.playback_status)
-        is_playing = status == 4
+                if not title and not s.source_app_user_model_id:
+                    continue
 
-        position_ms = int(timeline.position.total_seconds() * 1000) if timeline else 0
-        duration_ms = int(timeline.end_time.total_seconds() * 1000) if timeline else 0
+                playback_info = s.get_playback_info()
+                timeline = s.get_timeline_properties()
 
-        artwork = await _get_artwork(props)
+                status = int(playback_info.playback_status) if playback_info else 0
+                is_playing = status == 4
 
+                position_ms = (
+                    int(timeline.position.total_seconds() * 1000)
+                    if (timeline and timeline.position)
+                    else 0
+                )
+                duration_ms = (
+                    int(timeline.end_time.total_seconds() * 1000)
+                    if (timeline and timeline.end_time)
+                    else 0
+                )
+
+                artwork = await _get_artwork(props)
+
+                session_list.append(
+                    {
+                        "id": f"{app_id}_{idx}",
+                        "sessionId": f"{app_id}_{idx}",
+                        "app": app_id,
+                        "title": title or "Unknown title",
+                        "artist": artist or "",
+                        "isPlaying": is_playing,
+                        "status": status,
+                        "positionMs": max(0, position_ms),
+                        "durationMs": max(0, duration_ms),
+                        "artwork": artwork,
+                        "isCurrent": (s.source_app_user_model_id == current_id)
+                        if current_id
+                        else False,
+                    }
+                )
+            except Exception:
+                continue
+
+        # Sort: playing sessions first, then current session, then paused sessions
+        session_list.sort(key=lambda s: (not s["isPlaying"], not s["isCurrent"]))
+
+        primary = session_list[0] if session_list else None
         return {
-            "active": True,
-            "title": (props.title if props else "") or "",
-            "artist": (props.artist if props else "") or "",
-            "app": session.source_app_user_model_id or "",
-            "isPlaying": is_playing,
-            "positionMs": max(0, position_ms),
-            "durationMs": max(0, duration_ms),
-            "artwork": artwork,
+            "active": len(session_list) > 0,
+            "sessions": session_list,
+            # Top-level backwards compatibility fields
+            "title": primary["title"] if primary else "",
+            "artist": primary["artist"] if primary else "",
+            "app": primary["app"] if primary else "",
+            "isPlaying": primary["isPlaying"] if primary else False,
+            "positionMs": primary["positionMs"] if primary else 0,
+            "durationMs": primary["durationMs"] if primary else 0,
+            "artwork": primary["artwork"] if primary else None,
         }
     except Exception:
-        return {"active": False}
+        return {"active": False, "sessions": []}
 
 
-async def apply_command(action: str, value):
+async def apply_command(action: str, value, session_id: str = None):
     try:
+        if action == "volume":
+            set_system_volume(value)
+            return
+        elif action == "mute":
+            set_system_mute(bool(value))
+            return
+
         manager = await _get_manager()
-        session = manager.get_current_session()
+        session = await _find_session(manager, session_id)
 
         if action in ("play", "pause", "toggle", "next", "previous", "seek") and session is None:
             return
@@ -212,7 +275,8 @@ async def apply_command(action: str, value):
         elif action == "pause":
             await session.try_pause_async()
         elif action == "toggle":
-            status = int(session.get_playback_info().playback_status)
+            info = session.get_playback_info()
+            status = int(info.playback_status) if info else 0
             if status == 4:
                 await session.try_pause_async()
             else:
@@ -223,16 +287,13 @@ async def apply_command(action: str, value):
             await session.try_skip_previous_async()
         elif action == "seek":
             timeline = session.get_timeline_properties()
-            duration_ticks = int(timeline.end_time.total_seconds() * 10_000_000)
-            fraction = max(0.0, min(1.0, float(value)))
-            target_ticks = int(duration_ticks * fraction)
-            await session.try_change_playback_position_async(target_ticks)
-        elif action == "volume":
-            set_system_volume(value)
-        elif action == "mute":
-            set_system_mute(bool(value))
+            if timeline and timeline.end_time:
+                duration_ticks = int(timeline.end_time.total_seconds() * 10_000_000)
+                fraction = max(0.0, min(1.0, float(value)))
+                target_ticks = int(duration_ticks * fraction)
+                await session.try_change_playback_position_async(target_ticks)
     except Exception:
-        traceback.print_exc()
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +306,15 @@ def build_state_payload(media, vol):
     payload["muted"] = vol.get("muted")
     payload["ts"] = time.time()
     return payload
+
+
+def _get_comparable(state):
+    comp = {k: v for k, v in state.items() if k not in ("ts", "positionMs", "sessions")}
+    comp["sessions"] = [
+        {k: v for k, v in s.items() if k not in ("positionMs",)}
+        for s in state.get("sessions", [])
+    ]
+    return comp
 
 
 async def run():
@@ -260,7 +330,8 @@ async def run():
                 data = payload.get("payload", payload)
                 action = data.get("action")
                 value = data.get("value")
-                asyncio.create_task(apply_command(action, value))
+                session_id = data.get("sessionId")
+                asyncio.create_task(apply_command(action, value, session_id))
                 # Optimistic resync shortly after a command so the phone sees
                 # the real new state, not just its own guess.
                 asyncio.create_task(resync_soon(channel))
@@ -291,7 +362,7 @@ async def run():
                 vol = get_volume_state()
                 state = build_state_payload(media, vol)
 
-                comparable = {k: v for k, v in state.items() if k not in ("ts", "positionMs")}
+                comparable = _get_comparable(state)
                 changed = comparable != last_sent
                 stale = (time.time() - last_sent_at) > RESYNC_INTERVAL_SEC
 
@@ -325,3 +396,6 @@ if __name__ == "__main__":
         asyncio.run(run())
     except KeyboardInterrupt:
         pass
+    except BaseException as e:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log"), "w") as f:
+            traceback.print_exc(file=f)

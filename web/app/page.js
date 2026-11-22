@@ -15,8 +15,7 @@ function formatTime(ms) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-// Samples a small canvas to find an approximate dominant color for an image,
-// so the player's accent tint matches whatever's actually playing.
+// Samples a small canvas to find an approximate dominant color for an image
 function extractAccentColor(dataUri) {
   return new Promise((resolve) => {
     if (!dataUri) return resolve(null);
@@ -42,7 +41,6 @@ function extractAccentColor(dataUri) {
         r = Math.round(r / n);
         g = Math.round(g / n);
         b = Math.round(b / n);
-        // Push toward a readable mid-brightness so it works as a button fill.
         const boost = (c) => Math.min(255, Math.round(c * 0.6 + 90));
         resolve(`rgb(${boost(r)}, ${boost(g)}, ${boost(b)})`);
       } catch {
@@ -54,40 +52,44 @@ function extractAccentColor(dataUri) {
   });
 }
 
-function PlayIcon() {
+function PlayIcon({ size = 24 }) {
   return (
-    <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
       <path d="M8 5.5v13l11-6.5z" />
     </svg>
   );
 }
-function PauseIcon() {
+
+function PauseIcon({ size = 24 }) {
   return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
       <rect x="6" y="5" width="4.5" height="14" rx="1" />
       <rect x="13.5" y="5" width="4.5" height="14" rx="1" />
     </svg>
   );
 }
-function NextIcon() {
+
+function NextIcon({ size = 20 }) {
   return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
       <path d="M6 5v14l9-7z" />
       <rect x="16" y="5" width="2.5" height="14" />
     </svg>
   );
 }
-function PrevIcon() {
+
+function PrevIcon({ size = 20 }) {
   return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
       <path d="M18 5v14l-9-7z" />
       <rect x="5.5" y="5" width="2.5" height="14" />
     </svg>
   );
 }
+
 function VolumeIcon({ muted }) {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
       <path d="M4 9v6h4l5 5V4L8 9H4z" />
       {muted ? (
         <path
@@ -109,18 +111,26 @@ function VolumeIcon({ muted }) {
   );
 }
 
+function MediaIcon() {
+  return (
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor" opacity="0.4" aria-hidden="true">
+      <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
+    </svg>
+  );
+}
+
 export default function Page() {
   const [secretKey, setSecretKey] = useState(null);
   const [configError, setConfigError] = useState(null);
-  const [media, setMedia] = useState(null); // last state payload from the agent
+  const [media, setMedia] = useState(null);
   const [lastSeenAt, setLastSeenAt] = useState(0);
   const [now, setNow] = useState(Date.now());
   const [accent, setAccent] = useState("#6c8ef2");
-  const [dragPositionMs, setDragPositionMs] = useState(null);
-
+  const [dragPositions, setDragPositions] = useState({});
   const channelRef = useRef(null);
-  const debounceRef = useRef(null);
+  const volDebounceRef = useRef(null);
 
+  // Read ?key= from the URL once on mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const key = params.get("key");
@@ -133,6 +143,7 @@ export default function Page() {
     setSecretKey(key);
   }, []);
 
+  // Connect to Supabase Realtime channel
   useEffect(() => {
     if (!secretKey) return;
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -162,174 +173,257 @@ export default function Page() {
     };
   }, [secretKey]);
 
-  // Local clock, both to animate the progress bar between updates and to
-  // detect when the laptop has gone quiet.
+  // Local clock for playhead interpolation & offline detection
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 250);
-    return () => clearInterval(id);
+    const t = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(t);
   }, []);
 
+  // Sessions list extraction
+  const sessions = media?.sessions && media.sessions.length > 0
+    ? media.sessions
+    : (media?.active ? [{
+        sessionId: "default",
+        app: media.app || "Media",
+        title: media.title || "Unknown title",
+        artist: media.artist || "",
+        isPlaying: !!media.isPlaying,
+        positionMs: media.positionMs || 0,
+        durationMs: media.durationMs || 0,
+        artwork: media.artwork || null,
+        isCurrent: true,
+      }] : []);
+
+  // Extract accent color from active artwork
+  const primaryArtwork = sessions.find((s) => s.artwork)?.artwork || media?.artwork;
   useEffect(() => {
-    if (media?.artwork) {
-      extractAccentColor(media.artwork).then((c) => c && setAccent(c));
+    if (primaryArtwork) {
+      extractAccentColor(primaryArtwork).then((c) => {
+        if (c) setAccent(c);
+      });
     } else {
       setAccent("#6c8ef2");
     }
-  }, [media?.artwork]);
+  }, [primaryArtwork]);
 
-  const sendCommand = useCallback((action, value) => {
-    channelRef.current?.send({
+  const sendCommand = useCallback((action, value, sessionId) => {
+    if (!channelRef.current) return;
+    channelRef.current.send({
       type: "broadcast",
       event: COMMAND_EVENT,
-      payload: { action, value },
+      payload: { action, value, sessionId },
     });
   }, []);
 
-  const sendCommandDebounced = useCallback(
-    (action, value) => {
-      clearTimeout(debounceRef.current);
-      debounceRef.current = setTimeout(() => sendCommand(action, value), 180);
+  const sendVolumeDebounced = useCallback(
+    (val) => {
+      clearTimeout(volDebounceRef.current);
+      volDebounceRef.current = setTimeout(() => {
+        sendCommand("volume", val);
+      }, 150);
     },
     [sendCommand]
   );
 
   const isOffline = !media || now - lastSeenAt > OFFLINE_AFTER_MS;
-  const active = media?.active && !isOffline;
+  const hasSessions = sessions.length > 0 && !isOffline;
 
-  const duration = media?.durationMs || 0;
-  const elapsedSinceUpdate =
-    media?.isPlaying && !isOffline ? now - lastSeenAt : 0;
-  const livePosition = Math.min(
-    duration || Infinity,
-    (media?.positionMs || 0) + elapsedSinceUpdate
-  );
-  const shownPosition = dragPositionMs ?? livePosition;
+  // Optimistic toggle
+  const handleToggle = (session) => {
+    const nextIsPlaying = !session.isPlaying;
+    setMedia((prev) => {
+      if (!prev) return prev;
+      const updated = (prev.sessions || []).map((s) =>
+        s.sessionId === session.sessionId ? { ...s, isPlaying: nextIsPlaying } : s
+      );
+      return {
+        ...prev,
+        sessions: updated,
+        isPlaying: session.isCurrent ? nextIsPlaying : prev.isPlaying,
+      };
+    });
+    sendCommand("toggle", null, session.sessionId);
+  };
 
-  const rootStyle = { "--accent": accent };
+  const handleSeekChange = (sessionId, val) => {
+    setDragPositions((prev) => ({ ...prev, [sessionId]: val }));
+  };
+
+  const handleSeekEnd = (sessionId, durationMs, val) => {
+    const fraction = durationMs > 0 ? val / durationMs : 0;
+    sendCommand("seek", fraction, sessionId);
+    setTimeout(() => {
+      setDragPositions((prev) => {
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
+    }, 400);
+  };
 
   return (
-    <div className="screen" style={rootStyle}>
-      {active && media?.artwork && (
+    <div className="screen" style={{ "--accent": accent }}>
+      {hasSessions && primaryArtwork && (
         <div
           className="backdrop"
-          style={{ backgroundImage: `url(${media.artwork})` }}
+          style={{ backgroundImage: `url(${primaryArtwork})` }}
+          aria-hidden="true"
         />
       )}
-      {active && !media?.artwork && <div className="backdrop" />}
+      {hasSessions && !primaryArtwork && <div className="backdrop" aria-hidden="true" />}
 
+      {/* Top Header */}
       <header className="status" role="status" aria-live="polite">
         <span className={`statusDot ${isOffline ? "offline" : ""}`} />
-        {configError
-          ? "Not connected"
-          : isOffline
-          ? "Waiting for your laptop…"
-          : "Live"}
+        <span>
+          {configError
+            ? "Configuration Error"
+            : isOffline
+            ? "Waiting for your laptop…"
+            : sessions.length > 1
+            ? `Live • ${sessions.length} Players Active`
+            : "Live • Connected"}
+        </span>
       </header>
 
-      {configError ? (
-        <main className="body">
+      {/* Main Content */}
+      <main className="body" id="main-content">
+        {configError ? (
           <div className="placeholder">
             <h1>Can't connect yet</h1>
             <p>{configError}</p>
           </div>
-        </main>
-      ) : !active ? (
-        <main className="body">
+        ) : !hasSessions ? (
           <div className="placeholder">
             <h1>Nothing playing</h1>
-            <p>Start something on your laptop and it'll show up here.</p>
+            <p>Start audio or video on your laptop (YouTube, Spotify, etc.) and it will show up here.</p>
           </div>
-        </main>
-      ) : (
-        <main className="body">
-          <div
-            className="artwork"
-            role="img"
-            aria-label={media.title ? `${media.title} album artwork` : "Album artwork"}
-            style={
-              media.artwork ? { backgroundImage: `url(${media.artwork})` } : {}
-            }
-          />
+        ) : (
+          <div className={`playersContainer ${sessions.length > 1 ? "multiPlayer" : "singlePlayer"}`}>
+            {sessions.map((s, idx) => {
+              const elapsed = s.isPlaying && !isOffline ? now - lastSeenAt : 0;
+              const curPos =
+                dragPositions[s.sessionId] !== undefined
+                  ? dragPositions[s.sessionId]
+                  : Math.min(s.durationMs || Infinity, (s.positionMs || 0) + elapsed);
+              const totalDuration = s.durationMs || 0;
 
-          <div className="meta">
-            <h1 className="title">{media.title || "Unknown title"}</h1>
-            <p className="artist">{media.artist || "Unknown artist"}</p>
+              return (
+                <article
+                  key={s.sessionId || idx}
+                  className={`playerCard ${s.isPlaying ? "cardPlaying" : "cardPaused"}`}
+                  aria-label={`${s.title} on ${s.app}`}
+                >
+                  {/* Card Header: App Badge & Play State */}
+                  <div className="cardHeader">
+                    <span className="appBadge">{s.app}</span>
+                    <span className={`statusBadge ${s.isPlaying ? "badgePlaying" : "badgePaused"}`}>
+                      <span className="badgeDot" />
+                      {s.isPlaying ? "Playing" : "Paused"}
+                    </span>
+                  </div>
+
+                  {/* Artwork & Metadata */}
+                  <div className="cardMain">
+                    <div
+                      className="cardArtwork"
+                      role="img"
+                      aria-label={s.title ? `${s.title} artwork` : "Media artwork"}
+                      style={s.artwork ? { backgroundImage: `url(${s.artwork})` } : {}}
+                    >
+                      {!s.artwork && <MediaIcon />}
+                    </div>
+                    <div className="cardMeta">
+                      <h2 className="cardTitle" title={s.title}>
+                        {s.title || "Unknown title"}
+                      </h2>
+                      <p className="cardArtist" title={s.artist}>
+                        {s.artist || "Unknown artist"}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Seek Bar */}
+                  <div className="progress">
+                    <input
+                      className="progressBar"
+                      type="range"
+                      aria-label={`Playback position for ${s.title}`}
+                      min={0}
+                      max={totalDuration || 1}
+                      value={Math.min(curPos, totalDuration || 1)}
+                      onChange={(e) => handleSeekChange(s.sessionId, Number(e.target.value))}
+                      onMouseUp={(e) => handleSeekEnd(s.sessionId, totalDuration, Number(e.target.value))}
+                      onTouchEnd={(e) => handleSeekEnd(s.sessionId, totalDuration, Number(e.target.value))}
+                    />
+                    <div className="times">
+                      <span>{formatTime(curPos)}</span>
+                      <span>{formatTime(totalDuration)}</span>
+                    </div>
+                  </div>
+
+                  {/* Transport Controls */}
+                  <section className="cardTransport" aria-label={`Controls for ${s.title}`}>
+                    <button
+                      className="iconBtn"
+                      onClick={() => sendCommand("previous", null, s.sessionId)}
+                      aria-label="Previous track"
+                    >
+                      <PrevIcon size={sessions.length > 1 ? 20 : 24} />
+                    </button>
+
+                    <button
+                      className={`playBtn ${sessions.length > 1 ? "playBtnCompact" : ""}`}
+                      onClick={() => handleToggle(s)}
+                      aria-label={s.isPlaying ? "Pause" : "Play"}
+                    >
+                      {s.isPlaying ? (
+                        <PauseIcon size={sessions.length > 1 ? 22 : 26} />
+                      ) : (
+                        <PlayIcon size={sessions.length > 1 ? 22 : 26} />
+                      )}
+                    </button>
+
+                    <button
+                      className="iconBtn"
+                      onClick={() => sendCommand("next", null, s.sessionId)}
+                      aria-label="Next track"
+                    >
+                      <NextIcon size={sessions.length > 1 ? 20 : 24} />
+                    </button>
+                  </section>
+                </article>
+              );
+            })}
           </div>
+        )}
+      </main>
 
-          <div className="progress">
-            <input
-              className="progressBar"
-              type="range"
-              aria-label="Track playback position"
-              min={0}
-              max={duration || 1}
-              value={Math.min(shownPosition, duration || 1)}
-              onChange={(e) => setDragPositionMs(Number(e.target.value))}
-              onMouseUp={(e) => {
-                const fraction = duration ? Number(e.target.value) / duration : 0;
-                sendCommand("seek", fraction);
-                setTimeout(() => setDragPositionMs(null), 400);
-              }}
-              onTouchEnd={(e) => {
-                const fraction = duration
-                  ? Number(e.target.value) / duration
-                  : 0;
-                sendCommand("seek", fraction);
-                setTimeout(() => setDragPositionMs(null), 400);
-              }}
-            />
-            <div className="times">
-              <span>{formatTime(shownPosition)}</span>
-              <span>{formatTime(duration)}</span>
-            </div>
-          </div>
-
-          <section className="transport" aria-label="Playback controls">
+      {/* Persistent Master Volume Bar */}
+      {hasSessions && (
+        <footer className="masterVolumeFooter" role="contentinfo" aria-label="System Master Volume">
+          <section className="volumeRow" aria-label="Master volume controls">
             <button
               className="iconBtn"
-              onClick={() => sendCommand("previous")}
-              aria-label="Previous"
-            >
-              <PrevIcon />
-            </button>
-            <button
-              className="playBtn"
-              onClick={() => sendCommand("toggle")}
-              aria-label={media.isPlaying ? "Pause" : "Play"}
-            >
-              {media.isPlaying ? <PauseIcon /> : <PlayIcon />}
-            </button>
-            <button
-              className="iconBtn"
-              onClick={() => sendCommand("next")}
-              aria-label="Next"
-            >
-              <NextIcon />
-            </button>
-          </section>
-
-          <section className="volumeRow" aria-label="Volume controls">
-            <button
-              className="iconBtn"
-              style={{ padding: 8 }}
               onClick={() => sendCommand("mute", !media.muted)}
-              aria-label={media.muted ? "Unmute" : "Mute"}
+              aria-label={media.muted ? "Unmute master audio" : "Mute master audio"}
             >
               <VolumeIcon muted={media.muted} />
             </button>
             <input
               className="volumeSlider"
               type="range"
-              aria-label="Master volume control"
+              aria-label="Master volume slider"
               min={0}
               max={100}
               value={Math.round((media.volume ?? 0) * 100)}
-              onChange={(e) =>
-                sendCommandDebounced("volume", Number(e.target.value) / 100)
-              }
+              onChange={(e) => sendVolumeDebounced(Number(e.target.value) / 100)}
             />
+            <span className="volumePercent">
+              {media.muted ? "Muted" : `${Math.round((media.volume ?? 0) * 100)}%`}
+            </span>
           </section>
-        </main>
+        </footer>
       )}
     </div>
   );
